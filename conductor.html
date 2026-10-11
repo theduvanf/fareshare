@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fareshare — Calculadora del conductor</title>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<style>
+  :root{
+    --ink:#1B1B2F;
+    --panel:#242440;
+    --panel-2:#2D2D52;
+    --red:#D40000;
+    --red-dim:#A30000;
+    --cream:#F2EFE9;
+    --muted:#9C9BBE;
+    --green:#6FB98F;
+    --line:#3A3A63;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    min-height:100vh;
+    background:#0E0E1A;
+    font-family:'Segoe UI', system-ui, -apple-system, sans-serif;
+    color:var(--cream);
+    display:flex;
+    justify-content:center;
+    padding:28px 14px 60px;
+  }
+  .wrap{
+    width:420px;
+    max-width:100%;
+  }
+  .brand{
+    text-align:center;
+    margin-bottom:22px;
+  }
+  .brand h1{
+    font-family:'Courier New', monospace;
+    color:var(--red);
+    font-size:24px;
+    margin:0 0 4px;
+    letter-spacing:0.5px;
+  }
+  .brand p{
+    margin:0;
+    color:var(--muted);
+    font-size:13px;
+  }
+  .card{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:16px;
+    padding:20px;
+    margin-bottom:16px;
+  }
+  label{
+    display:block;
+    font-size:12px;
+    text-transform:uppercase;
+    letter-spacing:0.5px;
+    color:var(--muted);
+    margin-bottom:6px;
+  }
+  input[type=number]{
+    width:100%;
+    background:var(--panel-2);
+    border:1px solid var(--line);
+    border-radius:10px;
+    padding:12px 14px;
+    color:var(--cream);
+    font-size:20px;
+    font-family:'Courier New', monospace;
+    margin-bottom:14px;
+  }
+  input[type=number]:focus{
+    outline:none;
+    border-color:var(--red);
+  }
+  .row{
+    display:flex;
+    gap:10px;
+  }
+  .row .field{ flex:1; }
+  .small-label{
+    font-size:11px;
+    color:var(--muted);
+    margin-bottom:4px;
+  }
+  input.small{
+    font-size:15px;
+    padding:9px 10px;
+  }
+  .tier-badge{
+    display:inline-block;
+    font-size:11px;
+    background:rgba(212,0,0,0.15);
+    color:#ff6b6b;
+    padding:4px 10px;
+    border-radius:20px;
+    margin-bottom:12px;
+  }
+  .line{
+    display:flex;
+    justify-content:space-between;
+    font-size:14px;
+    padding:8px 0;
+    border-bottom:1px solid var(--line);
+  }
+  .line:last-of-type{ border-bottom:none; }
+  .line.total{
+    font-weight:700;
+    font-size:17px;
+    padding-top:12px;
+    margin-top:4px;
+    border-top:1px solid var(--line);
+  }
+  .line.payout{
+    color:var(--green);
+    font-weight:700;
+    font-size:20px;
+    padding-top:14px;
+    margin-top:6px;
+    border-top:1px dashed var(--line);
+  }
+  .rules{
+    font-size:12px;
+    color:var(--muted);
+    line-height:1.6;
+    margin-top:4px;
+  }
+  .rules b{ color:var(--cream); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">
+    <h1>FARESHARE</h1>
+    <p>calculadora de tarifas — solo para conductores</p>
+  </div>
+
+  <div class="card">
+    <label for="driverName">Tu nombre</label>
+    <input type="text" id="driverName" placeholder="Ej. Jorge R." style="font-size:15px;padding:10px 12px;" onblur="checkForActiveTrip()">
+  </div>
+
+  <div class="card" id="activeTripCard" style="display:none;">
+    <span class="tier-badge">Viaje activo</span>
+    <div id="activeTripContent"></div>
+  </div>
+
+  <div class="card">
+    <span class="tier-badge">Órdenes pendientes</span>
+    <div id="ordersList" style="margin-top:10px;font-size:13px;color:var(--muted);">Cargando...</div>
+  </div>
+
+  <div class="card" style="opacity:0.85;">
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px;text-transform:uppercase;letter-spacing:0.5px;">Calculadora manual</div>
+    <label for="miles">Distancia del viaje (millas)</label>
+    <input type="number" id="miles" min="0" step="0.1" value="8.6" oninput="calc()">
+
+    <div class="row">
+      <div class="field">
+        <div class="small-label">Comisión de la app</div>
+        <input type="number" class="small" id="commission" min="0" max="100" step="0.5" value="15" oninput="calc()">
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <span class="tier-badge" id="tierBadge">Rango: —</span>
+    <div class="line" id="lineBase"><span>Tarifa base</span><span id="valBase">$0.00</span></div>
+    <div class="line" id="lineMiles"><span id="labelMiles">Millas</span><span id="valMiles">$0.00</span></div>
+    <div class="line total"><span>Total (tarifa al cliente)</span><span id="valTotal">$0.00</span></div>
+    <div class="line" style="margin-top:14px;"><span>Comisión de la app</span><span id="valCommission">−$0.00</span></div>
+    <div class="line payout"><span>Recibes tú</span><span id="valPayout">$0.00</span></div>
+  </div>
+
+  <div class="card">
+    <div class="rules">
+      <b>Cómo se calcula:</b><br>
+      0–5 millas: tarifa fija de <b>$10.00</b><br>
+      5–30 millas: <b>$5.00</b> base + millas × <b>$2.75</b><br>
+      +30 millas: <b>$5.00</b> base + millas × <b>$2.50</b>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ⚠️ PEGA AQUÍ TU CONFIGURACIÓN DE FIREBASE (la misma que en la página del cliente)
+  const firebaseConfig = {
+    apiKey: "AIzaSyDUztMFKzez5Io45vk4IYJF4FvFNxkVkto",
+    authDomain: "viajes---proyecto.firebaseapp.com",
+    databaseURL: "https://viajes---proyecto-default-rtdb.firebaseio.com",
+    projectId: "viajes---proyecto",
+    storageBucket: "viajes---proyecto.firebasestorage.app",
+    messagingSenderId: "20833432546",
+    appId: "1:20833432546:web:f4a1910bf55065c4397fbb"
+  };
+
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.database();
+  const COMMISSION_DEFAULT = 15;
+
+  db.ref('orders').orderByChild('status').equalTo('pending').on('value', (snapshot) => {
+    const listEl = document.getElementById('ordersList');
+    const orders = snapshot.val();
+    if (!orders){
+      listEl.innerHTML = "No hay órdenes pendientes por ahora.";
+      return;
+    }
+    listEl.innerHTML = "";
+    Object.entries(orders).forEach(([orderId, order]) => {
+      const payout = (order.fare * (1 - COMMISSION_DEFAULT / 100)).toFixed(2);
+      const div = document.createElement('div');
+      div.style.cssText = "background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:8px;";
+      div.innerHTML = `
+        <div style="color:var(--cream);font-size:14px;margin-bottom:4px;">${order.pickup} → ${order.destination}</div>
+        <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--muted);margin-bottom:8px;">
+          <span>${order.miles} mi · tarifa $${order.fare.toFixed(2)}</span>
+          <span style="color:var(--green);">recibes $${payout}</span>
+        </div>
+        <button onclick="acceptOrder('${orderId}')" style="width:100%;background:var(--red);color:var(--cream);border:none;border-radius:8px;padding:8px;font-weight:700;cursor:pointer;">Aceptar</button>
+      `;
+      listEl.appendChild(div);
+    });
+  });
+
+  function checkForActiveTrip(){
+    const driverName = document.getElementById('driverName').value.trim();
+    if (!driverName) return;
+
+    db.ref('orders').orderByChild('driver').equalTo(driverName).once('value', (snapshot) => {
+      const orders = snapshot.val();
+      if (!orders) return;
+      const activeEntry = Object.entries(orders).find(([id, o]) =>
+        ["accepted", "arrived", "in_progress"].includes(o.status)
+      );
+      if (activeEntry){
+        watchActiveTrip(activeEntry[0]);
+      }
+    });
+  }
+
+  function acceptOrder(orderId){
+    const driverName = document.getElementById('driverName').value.trim();
+    if (!driverName){
+      alert("Escribe tu nombre arriba antes de aceptar un viaje.");
+      return;
+    }
+    db.ref('orders/' + orderId).update({ status: "accepted", driver: driverName });
+    watchActiveTrip(orderId);
+  }
+
+  function mapsUrl(lat, lng){
+    return `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`;
+  }
+
+  function watchActiveTrip(orderId){
+    db.ref('orders/' + orderId).on('value', (snap) => {
+      const order = snap.val();
+      const card = document.getElementById('activeTripCard');
+      const content = document.getElementById('activeTripContent');
+
+      if (!order || order.status === "completed"){
+        card.style.display = 'none';
+        return;
+      }
+
+      card.style.display = 'block';
+
+      let navLabel, navUrl, actionLabel, actionOnclick;
+
+      if (order.status === "accepted"){
+        navLabel = "Navegar hacia el cliente";
+        navUrl = mapsUrl(order.pickupLat, order.pickupLng);
+        actionLabel = "Ya llegué";
+        actionOnclick = `markArrived('${orderId}')`;
+      } else if (order.status === "arrived"){
+        navLabel = "Navegar hacia el cliente";
+        navUrl = mapsUrl(order.pickupLat, order.pickupLng);
+        actionLabel = "Iniciar viaje";
+        actionOnclick = `startTrip('${orderId}')`;
+      } else if (order.status === "in_progress"){
+        navLabel = "Navegar hacia el destino";
+        navUrl = mapsUrl(order.destLat, order.destLng);
+        actionLabel = "Finalizar viaje";
+        actionOnclick = `finishTrip('${orderId}')`;
+      }
+
+      content.innerHTML = `
+        <div style="color:var(--cream);font-size:14px;margin-bottom:10px;">${order.pickup} → ${order.destination}</div>
+        <a href="${navUrl}" target="_blank" style="display:block;text-align:center;background:var(--panel-2);border:1px solid var(--line);color:var(--cream);border-radius:8px;padding:10px;margin-bottom:10px;text-decoration:none;font-size:14px;">📍 ${navLabel}</a>
+        <button onclick="${actionOnclick}" style="width:100%;background:var(--red);color:var(--cream);border:none;border-radius:8px;padding:10px;font-weight:700;cursor:pointer;">${actionLabel}</button>
+      `;
+    });
+  }
+
+  function markArrived(orderId){
+    db.ref('orders/' + orderId).update({ status: "arrived" });
+  }
+
+  function startTrip(orderId){
+    db.ref('orders/' + orderId).update({ status: "in_progress" });
+  }
+
+  function finishTrip(orderId){
+    db.ref('orders/' + orderId).update({ status: "completed" });
+  }
+
+  function calcFare(miles){
+  if (miles <= 5){
+    return { tier: "0–5 mi (mínimo fijo)", base: 10, rate: 0, rateLabel: "Tarifa mínima", milesCost: 0, total: 10 };
+  } else if (miles <= 30){
+    const milesCost = miles * 2.75;
+    return { tier: "5–30 mi", base: 5, rate: 2.75, rateLabel: `Distancia (${miles.toFixed(1)} mi × $2.75)`, milesCost: milesCost, total: 5 + milesCost };
+  } else {
+    const milesCost = miles * 2.50;
+    return { tier: "+30 mi", base: 5, rate: 2.50, rateLabel: `Distancia (${miles.toFixed(1)} mi × $2.50)`, milesCost: milesCost, total: 5 + milesCost };
+  }
+}
+
+function calc(){
+  const milesInput = parseFloat(document.getElementById('miles').value) || 0;
+  const commissionPct = parseFloat(document.getElementById('commission').value) || 0;
+
+  const result = calcFare(milesInput);
+  const commissionAmt = result.total * (commissionPct / 100);
+  const payout = result.total - commissionAmt;
+
+  document.getElementById('tierBadge').textContent = "Rango: " + result.tier;
+
+  if (result.rate === 0){
+    document.getElementById('lineBase').style.display = 'none';
+    document.getElementById('labelMiles').textContent = "Tarifa mínima (hasta 5 mi)";
+    document.getElementById('valMiles').textContent = "$" + result.total.toFixed(2);
+  } else {
+    document.getElementById('lineBase').style.display = 'flex';
+    document.getElementById('valBase').textContent = "$" + result.base.toFixed(2);
+    document.getElementById('labelMiles').textContent = result.rateLabel;
+    document.getElementById('valMiles').textContent = "$" + result.milesCost.toFixed(2);
+  }
+
+  document.getElementById('valTotal').textContent = "$" + result.total.toFixed(2);
+  document.getElementById('valCommission').textContent = "−$" + commissionAmt.toFixed(2);
+  document.getElementById('valPayout').textContent = "$" + payout.toFixed(2);
+}
+
+calc();
+</script>
+</body>
+</html>

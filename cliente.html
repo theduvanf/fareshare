@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fareshare — Pedir viaje</title>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<!-- ⚠️ PEGA TU API KEY DE GOOGLE MAPS AQUÍ ABAJO, donde dice AIzaSyBA1KvuhUTgDcLtY66bZD0bPA-2RpIbodE -->
+<script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBA1KvuhUTgDcLtY66bZD0bPA-2RpIbodE&loading=async&v=weekly"></script>
+<style>
+  :root{
+    --ink:#1B1B2F; --panel:#242440; --panel-2:#2D2D52;
+    --red:#D40000; --cream:#F2EFE9; --muted:#9C9BBE;
+    --green:#6FB98F; --line:#3A3A63;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; min-height:100vh; background:#0E0E1A;
+    font-family:'Segoe UI', system-ui, -apple-system, sans-serif;
+    color:var(--cream); display:flex; justify-content:center;
+    padding:28px 14px 60px;
+  }
+  .wrap{ width:420px; max-width:100%; }
+  .brand{ text-align:center; margin-bottom:22px; }
+  .brand h1{ font-family:'Courier New', monospace; color:var(--red); font-size:24px; margin:0 0 4px; }
+  .brand p{ margin:0; color:var(--muted); font-size:13px; }
+  .card{ background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:20px; margin-bottom:16px; }
+  label{ display:block; font-size:12px; text-transform:uppercase; letter-spacing:0.5px; color:var(--muted); margin-bottom:6px; }
+  input[type=text], input[type=number]{
+    width:100%; background:var(--panel-2); border:1px solid var(--line);
+    border-radius:10px; padding:12px 14px; color:var(--cream);
+    font-size:15px; margin-bottom:14px;
+  }
+  input:focus{ outline:none; border-color:var(--red); }
+  .line{ display:flex; justify-content:space-between; font-size:14px; padding:8px 0; border-bottom:1px solid var(--line); }
+  .line:last-of-type{ border-bottom:none; }
+  .line.total{ font-weight:700; font-size:18px; color:var(--green); padding-top:12px; margin-top:4px; border-top:1px solid var(--line); }
+  gmp-place-autocomplete{ display:block; width:100%; margin-bottom:14px; color-scheme:dark; }
+  .btn{
+    width:100%; background:var(--red); color:var(--cream); border:none;
+    border-radius:12px; padding:14px; font-weight:700; font-size:15px;
+    cursor:pointer; margin-top:6px;
+  }
+  .btn:disabled{ opacity:0.5; cursor:not-allowed; }
+  .status{
+    text-align:center; font-size:14px; margin-top:14px; color:var(--muted);
+  }
+  .status.waiting{ color:#f0c14b; }
+  .status.accepted{ color:var(--green); font-weight:600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">
+    <h1>FARESHARE</h1>
+    <p>pedir un viaje</p>
+  </div>
+
+  <div class="card" id="formCard">
+    <label>Recogida</label>
+    <div id="pickupBox"></div>
+    <label>Destino</label>
+    <div id="destBox"></div>
+    <label>Distancia (calculada automáticamente)</label>
+    <input type="number" id="miles" min="0" step="0.1" value="0" readonly style="opacity:0.7;">
+    <div id="distanceStatus" style="font-size:12px;color:var(--muted);margin-top:-10px;margin-bottom:14px;">Escoge recogida y destino de la lista</div>
+
+    <div class="line"><span>Tarifa estimada</span><span id="fareDisplay">$0.00</span></div>
+
+    <button class="btn" id="submitBtn" onclick="submitOrder()">Pedir viaje</button>
+  </div>
+
+  <div class="card" id="statusCard" style="display:none;">
+    <div class="line"><span>Recogida</span><span id="sPickup"></span></div>
+    <div class="line"><span>Destino</span><span id="sDest"></span></div>
+    <div class="line total"><span>Tarifa</span><span id="sFare"></span></div>
+    <div class="status waiting" id="statusText">Buscando conductor...</div>
+  </div>
+</div>
+
+<script>
+  // ⚠️ PEGA AQUÍ TU CONFIGURACIÓN DE FIREBASE (paso 3 de la guía)
+  const firebaseConfig = {
+    apiKey: "AIzaSyDUztMFKzez5Io45vk4IYJF4FvFNxkVkto",
+    authDomain: "viajes---proyecto.firebaseapp.com",
+    databaseURL: "https://viajes---proyecto-default-rtdb.firebaseio.com",
+    projectId: "viajes---proyecto",
+    storageBucket: "viajes---proyecto.firebasestorage.app",
+    messagingSenderId: "20833432546",
+    appId: "1:20833432546:web:f4a1910bf55065c4397fbb"
+  };
+
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.database();
+
+  const MAPS_KEY = "AIzaSyBA1KvuhUTgDcLtY66bZD0bPA-2RpIbodE";
+
+  let pickupPlace = null;
+  let destPlace = null;
+  let pickupText = "";
+  let destText = "";
+
+  async function initMaps(){
+    const statusEl = document.getElementById('distanceStatus');
+    try {
+      const { PlaceAutocompleteElement } = await google.maps.importLibrary("places");
+
+      setupAutocomplete(PlaceAutocompleteElement, 'pickupBox', 'Ej. 253 N Porter St, Elgin', (loc, text) => {
+        pickupPlace = loc; pickupText = text; tryCalculateDistance();
+      });
+      setupAutocomplete(PlaceAutocompleteElement, 'destBox', "Ej. O'Hare Terminal 3", (loc, text) => {
+        destPlace = loc; destText = text; tryCalculateDistance();
+      });
+    } catch (e) {
+      console.error(e);
+      statusEl.textContent = "No se pudo cargar Google Maps. Revisa tu clave de API.";
+    }
+  }
+
+  function setupAutocomplete(PlaceAutocompleteElement, boxId, placeholder, onPick){
+    const el = new PlaceAutocompleteElement({ includedRegionCodes: ['us'] });
+    el.placeholder = placeholder;
+    document.getElementById(boxId).appendChild(el);
+
+    const handler = async (ev) => {
+      try {
+        const place = ev.placePrediction ? ev.placePrediction.toPlace() : ev.place;
+        await place.fetchFields({ fields: ['location', 'formattedAddress', 'displayName'] });
+        onPick(place.location, place.formattedAddress || place.displayName);
+      } catch (e) {
+        console.error(e);
+        document.getElementById('distanceStatus').textContent = "No se pudo leer esa dirección, intenta otra.";
+      }
+    };
+    el.addEventListener('gmp-select', handler);
+    el.addEventListener('gmp-placeselect', handler);
+  }
+
+  async function tryCalculateDistance(){
+    if (!pickupPlace || !destPlace) return;
+
+    const statusEl = document.getElementById('distanceStatus');
+    statusEl.textContent = "Calculando distancia...";
+
+    try {
+      const res = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': MAPS_KEY,
+          'X-Goog-FieldMask': 'routes.distanceMeters,routes.duration'
+        },
+        body: JSON.stringify({
+          origin: { location: { latLng: { latitude: pickupPlace.lat(), longitude: pickupPlace.lng() } } },
+          destination: { location: { latLng: { latitude: destPlace.lat(), longitude: destPlace.lng() } } },
+          travelMode: 'DRIVE'
+        })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.routes || !data.routes.length){
+        console.error(data);
+        statusEl.textContent = "No se pudo calcular la ruta entre esos puntos.";
+        return;
+      }
+      const route = data.routes[0];
+      const miles = route.distanceMeters / 1609.34;
+      const mins = Math.round(parseInt(route.duration) / 60);
+      document.getElementById('miles').value = miles.toFixed(1);
+      statusEl.textContent = "Distancia por carretera: " + miles.toFixed(1) + " mi (~" + mins + " min)";
+      updateFare();
+    } catch (e) {
+      console.error(e);
+      statusEl.textContent = "No se pudo calcular la distancia, intenta de nuevo.";
+    }
+  }
+
+  function calcFare(miles){
+    if (miles <= 5) return 10;
+    if (miles <= 30) return 5 + miles * 2.75;
+    return 5 + miles * 2.50;
+  }
+
+  function updateFare(){
+    const miles = parseFloat(document.getElementById('miles').value) || 0;
+    document.getElementById('fareDisplay').textContent = "$" + calcFare(miles).toFixed(2);
+  }
+
+  function submitOrder(){
+    const pickup = pickupText;
+    const destination = destText;
+    const miles = parseFloat(document.getElementById('miles').value) || 0;
+    const fare = calcFare(miles);
+
+    if (!pickupPlace || !destPlace || !pickup || !destination || miles <= 0){
+      alert("Completa recogida, destino y distancia.");
+      return;
+    }
+
+    document.getElementById('submitBtn').disabled = true;
+
+    const newOrderRef = db.ref('orders').push();
+    newOrderRef.set({
+      pickup, destination, miles, fare,
+      pickupLat: pickupPlace.lat(),
+      pickupLng: pickupPlace.lng(),
+      destLat: destPlace.lat(),
+      destLng: destPlace.lng(),
+      status: "pending",
+      driver: null,
+      createdAt: Date.now()
+    });
+
+    document.getElementById('formCard').style.display = 'none';
+    document.getElementById('statusCard').style.display = 'block';
+    document.getElementById('sPickup').textContent = pickup;
+    document.getElementById('sDest').textContent = destination;
+    document.getElementById('sFare').textContent = "$" + fare.toFixed(2);
+
+    newOrderRef.on('value', (snap) => {
+      const order = snap.val();
+      if (!order) return;
+      const statusEl = document.getElementById('statusText');
+      if (order.status === "accepted"){
+        statusEl.textContent = "¡" + order.driver + " va en camino!";
+        statusEl.className = "status accepted";
+      } else if (order.status === "arrived"){
+        statusEl.textContent = order.driver + " llegó, te está esperando";
+        statusEl.className = "status accepted";
+      } else if (order.status === "in_progress"){
+        statusEl.textContent = "Viaje en curso hacia tu destino";
+        statusEl.className = "status accepted";
+      } else if (order.status === "completed"){
+        statusEl.textContent = "Viaje completado, ¡gracias por viajar con Fareshare!";
+        statusEl.className = "status accepted";
+      } else {
+        statusEl.textContent = "Buscando conductor...";
+        statusEl.className = "status waiting";
+      }
+    });
+  }
+
+  updateFare();
+  window.addEventListener('load', initMaps);
+</script>
+</body>
+</html>
