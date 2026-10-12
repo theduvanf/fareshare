@@ -226,11 +226,17 @@
         })
       });
       const data = await res.json();
-      if (!res.ok || !data.routes || !data.routes.length){
+      if (!res.ok){
         console.error(data);
-        statusEl.textContent = "No se pudo calcular la ruta entre esos puntos.";
+        statusEl.textContent = "No se pudo calcular la ruta.";
+        showDiag("Google respondió: " + ((data.error && data.error.message) || ("error " + res.status)));
         return;
       }
+      if (!data.routes || !data.routes.length){
+        statusEl.textContent = "No se encontró una ruta de carretera entre esos puntos.";
+        return;
+      }
+      document.getElementById('mapsDiag').style.display = 'none';
       const route = data.routes[0];
       const miles = route.distanceMeters / 1609.34;
       const mins = Math.round(parseInt(route.duration) / 60);
