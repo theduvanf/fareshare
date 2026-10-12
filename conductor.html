@@ -6,6 +6,7 @@
 <title>Fareshare — Calculadora del conductor</title>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <style>
   :root{
     --ink:#1B1B2F;
@@ -141,14 +142,41 @@
     <p>calculadora de tarifas — solo para conductores</p>
   </div>
 
-  <div class="card">
-    <label for="driverName">Tu nombre</label>
-    <input type="text" id="driverName" placeholder="Ej. Jorge R." style="font-size:15px;padding:10px 12px;" onblur="checkForActiveTrip()">
+  <div class="card" id="authCard">
+    <span class="tier-badge">Iniciar sesión</span>
+    <div style="margin-top:12px;">
+      <input type="text" id="regName" placeholder="Tu nombre (solo para crear cuenta)" style="width:100%;margin-bottom:8px;background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:10px;color:var(--cream);">
+      <input type="email" id="authEmail" placeholder="Correo" style="width:100%;margin-bottom:8px;background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:10px;color:var(--cream);">
+      <input type="password" id="authPass" placeholder="Contraseña (mín. 6 caracteres)" style="width:100%;margin-bottom:10px;background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:10px;color:var(--cream);">
+      <button onclick="doLogin()" style="width:100%;background:var(--red);color:var(--cream);border:none;border-radius:8px;padding:10px;font-weight:700;cursor:pointer;margin-bottom:8px;">Entrar</button>
+      <button onclick="doRegister()" style="width:100%;background:var(--panel-2);color:var(--cream);border:1px solid var(--line);border-radius:8px;padding:10px;cursor:pointer;">Crear cuenta nueva</button>
+      <div id="authMsg" style="font-size:12px;color:#ff8a8a;margin-top:10px;line-height:1.4;"></div>
+    </div>
   </div>
+
+  <div class="card" id="pendingCard" style="display:none;">
+    <span class="tier-badge">Cuenta en revisión</span>
+    <div style="margin-top:10px;font-size:13px;color:var(--muted);line-height:1.5;">Tu cuenta fue creada, pero el administrador de Fareshare debe aprobarla antes de que puedas recibir viajes. Avísale y vuelve a entrar.</div>
+    <button onclick="auth.signOut()" style="width:100%;margin-top:12px;background:var(--panel-2);color:var(--cream);border:1px solid var(--line);border-radius:8px;padding:10px;cursor:pointer;">Cerrar sesión</button>
+  </div>
+
+  <div id="appBody" style="display:none;">
+  <div class="card" style="display:flex;justify-content:space-between;align-items:center;">
+    <div><div style="font-size:12px;color:var(--muted);">Conductor</div><div id="whoami" style="color:var(--cream);font-weight:700;"></div></div>
+    <button onclick="auth.signOut()" style="background:var(--panel-2);color:var(--cream);border:1px solid var(--line);border-radius:8px;padding:8px 12px;cursor:pointer;">Salir</button>
+  </div>
+  <input type="hidden" id="driverName">
 
   <div class="card" id="activeTripCard" style="display:none;">
     <span class="tier-badge">Viaje activo</span>
     <div id="activeTripContent"></div>
+  </div>
+
+  <div class="card" id="summaryCard" style="display:none;"></div>
+
+  <div class="card">
+    <span class="tier-badge">Mis ganancias</span>
+    <div id="earnings" style="margin-top:10px;font-size:13px;color:var(--muted);">Escribe tu nombre arriba para ver tus ganancias.</div>
   </div>
 
   <div class="card">
@@ -186,6 +214,7 @@
       +30 millas: <b>$5.00</b> base + millas × <b>$2.50</b>
     </div>
   </div>
+  </div><!-- /appBody -->
 </div>
 
 <script>
@@ -204,6 +233,67 @@
   const db = firebase.database();
   const COMMISSION_DEFAULT = 15;
 
+  const auth = firebase.auth();
+  let me = null, appStarted = false;
+
+  function authErr(e){
+    const m = {
+      'auth/invalid-email':'Correo inválido.',
+      'auth/missing-password':'Escribe tu contraseña.',
+      'auth/weak-password':'La contraseña debe tener mínimo 6 caracteres.',
+      'auth/email-already-in-use':'Ese correo ya tiene cuenta. Usa Entrar.',
+      'auth/invalid-credential':'Correo o contraseña incorrectos.',
+      'auth/wrong-password':'Correo o contraseña incorrectos.',
+      'auth/user-not-found':'Correo o contraseña incorrectos.',
+      'auth/operation-not-allowed':'Falta activar Email/Password en Firebase Authentication.'
+    };
+    document.getElementById('authMsg').textContent = m[e.code] || ("Error: " + (e.code || e.message));
+  }
+  function doLogin(){
+    document.getElementById('authMsg').textContent = "";
+    auth.signInWithEmailAndPassword(document.getElementById('authEmail').value.trim(), document.getElementById('authPass').value).catch(authErr);
+  }
+  function doRegister(){
+    document.getElementById('authMsg').textContent = "";
+    const name = document.getElementById('regName').value.trim();
+    if (!name){ document.getElementById('authMsg').textContent = "Escribe tu nombre para crear la cuenta."; return; }
+    const email = document.getElementById('authEmail').value.trim();
+    auth.createUserWithEmailAndPassword(email, document.getElementById('authPass').value).then((cred) => {
+      return Promise.all([
+        db.ref('drivers/' + cred.user.uid + '/name').set(name),
+        db.ref('drivers/' + cred.user.uid + '/email').set(email)
+      ]);
+    }).then(() => location.reload()).catch(authErr);
+  }
+
+  auth.onAuthStateChanged((user) => {
+    const show = (id, on) => document.getElementById(id).style.display = on ? 'block' : 'none';
+    if (!user || user.isAnonymous){
+      me = null; show('authCard', true); show('pendingCard', false); show('appBody', false);
+      return;
+    }
+    db.ref('drivers/' + user.uid).once('value').then((snap) => {
+      const d = snap.val() || {};
+      show('authCard', false);
+      if (d.approved === true){
+        me = { uid: user.uid, name: d.name || user.email };
+        document.getElementById('whoami').textContent = me.name;
+        document.getElementById('driverName').value = me.name;
+        show('pendingCard', false); show('appBody', true);
+        if (!appStarted){ appStarted = true; startApp(); }
+      } else {
+        show('pendingCard', true); show('appBody', false);
+      }
+    }).catch(authErr);
+  });
+
+  function startApp(){
+    startPending();
+    checkForActiveTrip();
+    loadEarnings();
+  }
+
+  function startPending(){
   db.ref('orders').orderByChild('status').equalTo('pending').on('value', (snapshot) => {
     const listEl = document.getElementById('ordersList');
     const orders = snapshot.val();
@@ -219,7 +309,7 @@
       div.innerHTML = `
         <div style="color:var(--cream);font-size:14px;margin-bottom:4px;">${order.pickup} → ${order.destination}</div>
         <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--muted);margin-bottom:8px;">
-          <span>${order.miles} mi · tarifa $${order.fare.toFixed(2)}</span>
+          <span>${order.miles} mi · tarifa $${order.fare.toFixed(2)} · paga: ${order.payMethod||'efectivo'}</span>
           <span style="color:var(--green);">recibes $${payout}</span>
         </div>
         <button onclick="acceptOrder('${orderId}')" style="width:100%;background:var(--red);color:var(--cream);border:none;border-radius:8px;padding:8px;font-weight:700;cursor:pointer;">Aceptar</button>
@@ -227,12 +317,12 @@
       listEl.appendChild(div);
     });
   });
+  }
 
   function checkForActiveTrip(){
-    const driverName = document.getElementById('driverName').value.trim();
-    if (!driverName) return;
+    if (!me) return;
 
-    db.ref('orders').orderByChild('driver').equalTo(driverName).once('value', (snapshot) => {
+    db.ref('orders').orderByChild('driverUid').equalTo(me.uid).once('value', (snapshot) => {
       const orders = snapshot.val();
       if (!orders) return;
       const activeEntry = Object.entries(orders).find(([id, o]) =>
@@ -245,12 +335,8 @@
   }
 
   function acceptOrder(orderId){
-    const driverName = document.getElementById('driverName').value.trim();
-    if (!driverName){
-      alert("Escribe tu nombre arriba antes de aceptar un viaje.");
-      return;
-    }
-    db.ref('orders/' + orderId).update({ status: "accepted", driver: driverName });
+    if (!me) return;
+    db.ref('orders/' + orderId).update({ status: "accepted", driver: me.name, driverUid: me.uid });
     watchActiveTrip(orderId);
   }
 
@@ -258,16 +344,92 @@
     return `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`;
   }
 
+  // ---- Compartir ubicación en vivo con el cliente ----
+  let geoWatchId = null, wakeLock = null, lastSent = 0, sharingOrder = null;
+  async function startSharing(orderId){
+    if (sharingOrder === orderId) return;
+    stopSharing();
+    sharingOrder = orderId;
+    if (!navigator.geolocation){ return; }
+    try { if (navigator.wakeLock) wakeLock = await navigator.wakeLock.request('screen'); } catch(e){}
+    geoWatchId = navigator.geolocation.watchPosition((pos) => {
+      const now = Date.now();
+      if (now - lastSent < 4000) return;
+      lastSent = now;
+      db.ref('orders/' + orderId).update({
+        driverLat: pos.coords.latitude,
+        driverLng: pos.coords.longitude,
+        driverUpdatedAt: now
+      });
+    }, (err) => {
+      const el = document.getElementById('gpsMsg');
+      if (el) el.textContent = "⚠️ No pude obtener tu ubicación: permite el acceso al GPS en el navegador.";
+    }, { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 });
+  }
+  function stopSharing(){
+    if (geoWatchId !== null) navigator.geolocation.clearWatch(geoWatchId);
+    geoWatchId = null; sharingOrder = null;
+    try { if (wakeLock) wakeLock.release(); } catch(e){}
+    wakeLock = null;
+  }
+
+  function money(n){ return "$" + (Number(n)||0).toFixed(2); }
+
+  function showSummary(order){
+    const card = document.getElementById('summaryCard');
+    card.style.display = 'block';
+    card.innerHTML = `
+      <span class="tier-badge">Último viaje ✅</span>
+      <div style="color:var(--cream);font-size:14px;margin:10px 0;">${order.pickup} → ${order.destination}</div>
+      <div class="line"><span>Millas</span><span>${Number(order.miles).toFixed(1)}</span></div>
+      <div class="line"><span>Tarifa del cliente</span><span>${money(order.fare)}</span></div>
+      <div class="line"><span>Comisión Fareshare (${order.commissionPct||COMMISSION_DEFAULT}%)</span><span>-${money(order.commissionAmount)}</span></div>
+      <div class="line total"><span>Tu ganancia</span><span>${money(order.driverPayout)}</span></div>
+      <div class="line"><span>Método de pago</span><span>${order.payMethod||'efectivo'}</span></div>
+      ${order.paid
+        ? '<div style="text-align:center;color:var(--green);margin-top:10px;">✓ Pago recibido</div>'
+        : `<button onclick="markPaid('${order.id}')" style="width:100%;margin-top:12px;background:var(--green);color:#10281c;border:none;border-radius:8px;padding:10px;font-weight:700;cursor:pointer;">Cobré ${money(order.fare)} — marcar pago recibido</button>`}
+      <button onclick="document.getElementById('summaryCard').style.display='none'" style="width:100%;margin-top:12px;background:var(--panel-2);color:var(--cream);border:1px solid var(--line);border-radius:8px;padding:10px;cursor:pointer;">Cerrar</button>`;
+    card.scrollIntoView({behavior:'smooth'});
+  }
+
+  function loadEarnings(){
+    const el = document.getElementById('earnings');
+    if (!me) return;
+    db.ref('orders').orderByChild('driverUid').equalTo(me.uid).on('value', (snap) => {
+      const all = Object.values(snap.val() || {}).filter(o => o.status === "completed");
+      const now = new Date();
+      const startDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      const startWeek = startDay - ((now.getDay()+6)%7) * 86400000; // lunes
+      const sum = (arr) => arr.reduce((a,o)=>a+(Number(o.driverPayout)||0),0);
+      const today = all.filter(o => (o.completedAt||0) >= startDay);
+      const week = all.filter(o => (o.completedAt||0) >= startWeek);
+      const miles = all.reduce((a,o)=>a+(Number(o.miles)||0),0);
+      const recent = all.sort((a,b)=>(b.completedAt||0)-(a.completedAt||0)).slice(0,5);
+      el.innerHTML = `
+        <div class="line"><span>Hoy (${today.length} viajes)</span><span>${money(sum(today))}</span></div>
+        <div class="line"><span>Esta semana (${week.length})</span><span>${money(sum(week))}</span></div>
+        <div class="line"><span>Pendiente de cobrar al cliente</span><span style="color:#f0c14b;">${money(all.filter(o=>!o.paid).reduce((a,o)=>a+(Number(o.fare)||0),0))}</span></div>
+        <div class="line total"><span>Total (${all.length} viajes · ${miles.toFixed(0)} mi)</span><span>${money(sum(all))}</span></div>
+        ${recent.length ? '<div style="margin-top:12px;color:var(--cream);">Últimos viajes</div>' : ''}
+        ${recent.map(o => `<div class="line"><span>${new Date(o.completedAt||0).toLocaleDateString()} · ${Number(o.miles).toFixed(1)} mi</span><span>${money(o.driverPayout)}</span></div>`).join('')}`;
+    });
+  }
+
   function watchActiveTrip(orderId){
     db.ref('orders/' + orderId).on('value', (snap) => {
       const order = snap.val();
+      if (order) order.id = orderId;
       const card = document.getElementById('activeTripCard');
       const content = document.getElementById('activeTripContent');
 
       if (!order || order.status === "completed"){
         card.style.display = 'none';
+        stopSharing();
+        if (order && order.status === "completed" && !order.summaryShown){ showSummary(order); }
         return;
       }
+      startSharing(orderId);
 
       card.style.display = 'block';
 
@@ -294,8 +456,14 @@
         <div style="color:var(--cream);font-size:14px;margin-bottom:10px;">${order.pickup} → ${order.destination}</div>
         <a href="${navUrl}" target="_blank" style="display:block;text-align:center;background:var(--panel-2);border:1px solid var(--line);color:var(--cream);border-radius:8px;padding:10px;margin-bottom:10px;text-decoration:none;font-size:14px;">📍 ${navLabel}</a>
         <button onclick="${actionOnclick}" style="width:100%;background:var(--red);color:var(--cream);border:none;border-radius:8px;padding:10px;font-weight:700;cursor:pointer;">${actionLabel}</button>
+        <div style="font-size:13px;color:#f0c14b;margin-top:10px;">💵 Cobrar ${money(order.fare)} · ${order.payMethod||'efectivo'}</div>
+        <div id="gpsMsg" style="font-size:12px;color:var(--muted);margin-top:10px;line-height:1.4;">📡 Compartiendo tu ubicación con el cliente. Mantén esta página visible (pantalla dividida con Google Maps) para que el cliente te siga en vivo.</div>
       `;
     });
+  }
+
+  function markPaid(orderId){
+    db.ref('orders/' + orderId).update({ paid: true, paidAt: Date.now() });
   }
 
   function markArrived(orderId){
@@ -307,7 +475,19 @@
   }
 
   function finishTrip(orderId){
-    db.ref('orders/' + orderId).update({ status: "completed" });
+    db.ref('orders/' + orderId).once('value', (snap) => {
+      const o = snap.val() || {};
+      const fare = Number(o.fare) || 0;
+      const commissionAmount = Math.round(fare * COMMISSION_DEFAULT) / 100;
+      const driverPayout = Math.round((fare - commissionAmount) * 100) / 100;
+      db.ref('orders/' + orderId).update({
+        status: "completed",
+        completedAt: Date.now(),
+        commissionPct: COMMISSION_DEFAULT,
+        commissionAmount: commissionAmount,
+        driverPayout: driverPayout
+      });
+    });
   }
 
   function calcFare(miles){

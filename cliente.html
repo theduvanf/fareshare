@@ -6,6 +6,7 @@
 <title>Fareshare — Pedir viaje</title>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <!-- ⚠️ PEGA TU API KEY DE GOOGLE MAPS AQUÍ ABAJO, donde dice AIzaSyBA1KvuhUTgDcLtY66bZD0bPA-2RpIbodE -->
 <style>
   :root{
@@ -71,6 +72,14 @@
     <div id="distanceStatus" style="font-size:12px;color:var(--muted);margin-top:-10px;margin-bottom:14px;">Escoge recogida y destino de la lista</div>
     <div id="mapsDiag" style="display:none;font-size:12px;color:#ff8a8a;margin-bottom:14px;line-height:1.4;"></div>
 
+    <label>Cómo vas a pagar</label>
+    <select id="payMethod" style="width:100%;background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:12px 14px;color:var(--cream);font-size:15px;margin-bottom:14px;">
+      <option value="Efectivo">Efectivo</option>
+      <option value="Zelle">Zelle</option>
+      <option value="Cash App">Cash App</option>
+      <option value="Venmo">Venmo</option>
+    </select>
+
     <div class="line"><span>Tarifa estimada</span><span id="fareDisplay">$0.00</span></div>
 
     <button class="btn" id="submitBtn" onclick="submitOrder()">Pedir viaje</button>
@@ -80,7 +89,11 @@
     <div class="line"><span>Recogida</span><span id="sPickup"></span></div>
     <div class="line"><span>Destino</span><span id="sDest"></span></div>
     <div class="line total"><span>Tarifa</span><span id="sFare"></span></div>
+    <div id="payNote" style="text-align:center;font-size:13px;color:#f0c14b;margin-top:8px;"></div>
     <div class="status waiting" id="statusText">Buscando conductor...</div>
+    <div id="liveInfo" style="display:none;text-align:center;font-size:14px;margin-top:10px;color:var(--cream);"></div>
+    <div id="liveMap" style="display:none;height:300px;border-radius:12px;margin-top:12px;border:1px solid var(--line);"></div>
+    <div id="receipt" style="display:none;margin-top:14px;"></div>
   </div>
 </div>
 
@@ -98,6 +111,7 @@
 
   firebase.initializeApp(firebaseConfig);
   const db = firebase.database();
+  const auth = firebase.auth();
 
   const MAPS_KEY = "AIzaSyBA1KvuhUTgDcLtY66bZD0bPA-2RpIbodE";
 
@@ -260,7 +274,7 @@
     document.getElementById('fareDisplay').textContent = miles > 0 ? "$" + calcFare(miles).toFixed(2) : "—";
   }
 
-  function submitOrder(){
+  async function submitOrder(){
     const pickup = pickupText;
     const destination = destText;
     const miles = parseFloat(document.getElementById('miles').value) || 0;
@@ -272,6 +286,14 @@
     }
 
     document.getElementById('submitBtn').disabled = true;
+    try {
+      if (!auth.currentUser) await auth.signInAnonymously();
+    } catch(e){
+      alert("No pude iniciar la sesión del cliente: " + (e.code || e.message));
+      document.getElementById('submitBtn').disabled = false;
+      return;
+    }
+    const payMethod = document.getElementById('payMethod').value;
 
     const newOrderRef = db.ref('orders').push();
     newOrderRef.set({
@@ -281,6 +303,9 @@
       destLat: destPlace.lat(),
       destLng: destPlace.lng(),
       status: "pending",
+      customerUid: auth.currentUser.uid,
+      payMethod: payMethod,
+      paid: false,
       driver: null,
       createdAt: Date.now()
     });
@@ -294,6 +319,10 @@
     newOrderRef.on('value', (snap) => {
       const order = snap.val();
       if (!order) return;
+      updateLive(order);
+      const pn = document.getElementById('payNote');
+      pn.textContent = order.paid ? "✓ Pago recibido, gracias" :
+        (order.status === "pending" ? "" : `💵 Recuerda pagar $${Number(order.fare).toFixed(2)} al conductor por ${order.payMethod || 'efectivo'}`);
       const statusEl = document.getElementById('statusText');
       if (order.status === "accepted"){
         statusEl.textContent = "¡" + order.driver + " va en camino!";
@@ -310,6 +339,79 @@
       } else {
         statusEl.textContent = "Buscando conductor...";
         statusEl.className = "status waiting";
+      }
+    });
+  }
+
+  // ---- Mapa en vivo ----
+  let liveMap = null, mDriver = null, mTarget = null, mapsJsLoading = false;
+  function loadMapsJs(cb){
+    if (window.google && google.maps && google.maps.Map){ cb(); return; }
+    window.__mapsReady = cb;
+    if (mapsJsLoading) return;
+    mapsJsLoading = true;
+    const sc = document.createElement('script');
+    sc.src = "https://maps.googleapis.com/maps/api/js?key=" + MAPS_KEY + "&callback=__mapsReadyCb";
+    sc.async = true;
+    document.head.appendChild(sc);
+  }
+  window.__mapsReadyCb = function(){ if (window.__mapsReady) window.__mapsReady(); };
+
+  function milesBetween(a,b,c,d){
+    const R=3958.8, r=x=>x*Math.PI/180;
+    const h=Math.sin(r(c-a)/2)**2+Math.cos(r(a))*Math.cos(r(c))*Math.sin(r(d-b)/2)**2;
+    return 2*R*Math.asin(Math.sqrt(h));
+  }
+
+  function updateLive(order){
+    const info = document.getElementById('liveInfo');
+    const mapEl = document.getElementById('liveMap');
+    const receipt = document.getElementById('receipt');
+    const active = ["accepted","arrived","in_progress"].includes(order.status);
+
+    if (order.status === "completed"){
+      info.style.display = mapEl.style.display = 'none';
+      receipt.style.display = 'block';
+      receipt.innerHTML = `
+        <div class="line"><span>Conductor</span><span>${order.driver||''}</span></div>
+        <div class="line"><span>Distancia</span><span>${Number(order.miles).toFixed(1)} mi</span></div>
+        <div class="line"><span>Método de pago</span><span>${order.payMethod||'Efectivo'}</span></div>
+        <div class="line total"><span>Total a pagar</span><span>$${Number(order.fare).toFixed(2)}</span></div>
+        <button class="btn" onclick="location.reload()">Pedir otro viaje</button>`;
+      return;
+    }
+    if (!active){ info.style.display = mapEl.style.display = 'none'; return; }
+
+    const hasDriver = typeof order.driverLat === "number";
+    const target = order.status === "in_progress"
+      ? {lat: order.destLat, lng: order.destLng, label: "destino"}
+      : {lat: order.pickupLat, lng: order.pickupLng, label: "tu ubicación"};
+
+    info.style.display = 'block';
+    if (order.status === "arrived"){
+      info.textContent = "🚗 Tu conductor ya llegó";
+    } else if (hasDriver){
+      const d = milesBetween(order.driverLat, order.driverLng, target.lat, target.lng);
+      const mins = Math.max(1, Math.round(d / 25 * 60));
+      info.textContent = `📍 A ${d.toFixed(1)} mi de ${target.label} · ~${mins} min`;
+    } else {
+      info.textContent = "Esperando la ubicación del conductor...";
+    }
+
+    mapEl.style.display = 'block';
+    loadMapsJs(() => {
+      const tpos = {lat: target.lat, lng: target.lng};
+      if (!liveMap){
+        liveMap = new google.maps.Map(mapEl, { center: tpos, zoom: 14, disableDefaultUI: true, zoomControl: true });
+        mTarget = new google.maps.Marker({ map: liveMap, position: tpos, label: "📌" });
+        mDriver = new google.maps.Marker({ map: liveMap, label: "🚗" });
+      }
+      mTarget.setPosition(tpos);
+      if (hasDriver){
+        const dpos = {lat: order.driverLat, lng: order.driverLng};
+        mDriver.setPosition(dpos);
+        const b = new google.maps.LatLngBounds(); b.extend(dpos); b.extend(tpos);
+        liveMap.fitBounds(b, 50);
       }
     });
   }
